@@ -1,0 +1,12 @@
+{
+  "com.tal100.yach": {
+    "label": {
+      "en": "Yach",
+      "zh-CN": "知音楼"
+    },
+    "format": "svg",
+    "color": "#0066FF",
+    "overlay": true,
+    "contributors": "owmhbry5"
+  }
+}

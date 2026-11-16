@@ -1,0 +1,104 @@
+name: Release Icon Resources
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'icons/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-icon-resources:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: icon-resources-release
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Resolve Icon Resource Release
+        id: release
+        run: |
+          resolved_sha=$(git rev-parse HEAD)
+          tag="${resolved_sha:0:7}"
+          echo "sha=$resolved_sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $tag already exists; skipping."
+            exit 0
+          fi
+          before_tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName // empty')
+          if [[ -n "$before_tag" ]] && git diff --quiet "$before_tag" "$resolved_sha" -- icons; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "No icon changes since $before_tag; skipping."
+            exit 0
+          fi
+          echo "before_tag=$before_tag" >> "$GITHUB_OUTPUT"
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Icon Resource Release
+        if: steps.release.outputs.exists == 'false'
+        id: bundle
+        env:
+          BEFORE_TAG: ${{ steps.release.outputs.before_tag }}
+          SHA: ${{ steps.release.outputs.sha }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          archive="$RUNNER_TEMP/anip-bundle-$TAG.zip"
+          (
+            cd icons
+            zip -qr "$archive" app game system
+          )
+          asset_name="anip-bundle-$TAG.zip"
+          manifest="$RUNNER_TEMP/anip-release.json"
+          timestamp_seconds=$(git show -s --format=%ct "$SHA")
+          timestamp=$((timestamp_seconds * 1000))
+          size=$(stat -c%s "$archive")
+          sha256=$(sha256sum "$archive" | cut -d ' ' -f1)
+          download_url="$asset_name"
+          jq -n \
+            --argjson schemaVersion 1 \
+            --arg tag "$TAG" \
+            --argjson timestamp "$timestamp" \
+            --arg assetName "$asset_name" \
+            --arg downloadUrl "$download_url" \
+            --argjson size "$size" \
+            --arg sha256 "$sha256" \
+            '{
+              schemaVersion: $schemaVersion,
+              tag: $tag,
+              timestamp: $timestamp,
+              assetName: $assetName,
+              downloadUrl: $downloadUrl,
+              size: $size,
+              sha256: $sha256
+            }' > "$manifest"
+          {
+            if [[ -n "$BEFORE_TAG" ]]; then
+              echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$BEFORE_TAG...$TAG"
+            else
+              echo "Initial ANIP icon bundle release."
+            fi
+          } > "$RUNNER_TEMP/anip-release-notes.md"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
+
+      - name: Publish Icon Resource Release
+        if: steps.release.outputs.exists == 'false'
+        env:
+          ARCHIVE: ${{ steps.bundle.outputs.archive }}
+          MANIFEST: ${{ steps.bundle.outputs.manifest }}
+          SHA: ${{ steps.release.outputs.sha }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh release create "$TAG" "$ARCHIVE" "$MANIFEST" --repo "$GITHUB_REPOSITORY" --target "$SHA" --title "$TAG" --notes-file "$RUNNER_TEMP/anip-release-notes.md" --latest
